@@ -74,8 +74,19 @@ Connect a WebSocket client to `ws://localhost:8090/v1/voice/stream`, then:
    ```json
    {"type": "turn_end", "turn_id": "turn-1"}
    ```
-   The server replies with `{"type": "turn_started", "turn_id": "turn-1"}`
-   and then streams the answer as binary audio frames.
+   The server replies with `{"type": "turn_started", "turn_id": "turn-1"}`,
+   then streams the answer as binary audio frames, then finally sends
+   `{"type": "turn_done", "turn_id": "turn-1", "transcript": "...", "answer_text": "..."}`
+   once all audio for the turn has been sent — that's the client's
+   signal to stop waiting for more chunks (a cancelled turn gets
+   `turn_cancelled` instead, never `turn_done`, and never carries
+   captions — that content was discarded, not spoken).
+
+   `transcript`/`answer_text` are optional captions for the UI — what
+   STT heard and the chatbot's full reply — sent together once the turn
+   completes, not streamed word-by-word as the turn happens. Either can
+   be `null` (e.g. `answer_text` is null if the turn ended before any
+   text came back, such as an STT failure).
 5. If the user starts speaking again while the bot is still talking
    (barge-in), send:
    ```json
@@ -107,7 +118,36 @@ Connect a WebSocket client to `ws://localhost:8090/v1/voice/stream`, then:
   (buffering, cancellation, filler timing) are all in place and would
   slot in a server-side VAD detector later without protocol changes.
 
-## 6. Running tests
+## 6. Token usage logs
+
+Every turn that reaches the chatbot and gets a real LLM response produces
+one text file in `TOKEN_USAGE_LOG_DIR` (default `token_usage_logs/`,
+gitignored) — voice channel only, chat is never affected:
+
+```
+GoodScore Voice — Token Usage Log
+==================================
+call_id:        call-...
+turn_id:        turn-...
+user_ref:       <anonymised>
+timestamp_utc:  20260831T171203Z
+language:       en
+
+input_tokens:   120
+output_tokens:  45
+total_tokens:   165
+```
+
+Token counts come from `backend/chat/agent.py`'s Strands `Agent` —
+`agent.event_loop_metrics.accumulated_usage`, captured the instant the
+model finishes generating (not after AgentCore Memory's write), so
+logging never adds latency to the spoken response. The chatbot's `done`
+SSE event carries this as an additive `token_usage` field only when the
+request was tagged `channel="voice"`; a turn that never reaches the
+chatbot (e.g. STT failed) or whose chatbot call failed before a real
+model response has nothing to report and produces no file.
+
+## 7. Running tests
 
 ```bash
 cd backend/voice
@@ -122,7 +162,13 @@ network access or real API keys are needed to run the suite.
 Chat regression tests for the additive `backend/chat/` changes live in
 `backend/chat/tests/` — run with `cd backend/chat && pip install -r requirements-dev.txt && pytest`.
 
-## 7. Known TBD / deployment items
+If pytest fails at collection with a `PermissionError` on
+`...\AppData\Local\Temp\pytest-of-<you>` (a Windows-specific temp-dir
+locking issue, unrelated to this project), rerun with an explicit temp
+dir: `pytest --basetemp=.pytest_tmp` (add `.pytest_tmp/` to your local
+ignore if you hit this).
+
+## 8. Known TBD / deployment items
 
 - **`AGENTCORE_INVOKE_URL`** — production AgentCore Runtime invoke URL for `CHATBOT_MODE=agentcore`.
 - **Approved Sonnet 5 Bedrock model identifier** — `backend/chat/config.py`'s `BEDROCK_MODEL_ID` default is `global.anthropic.claude-sonnet-4-6`, not Sonnet 5. Update `backend/chat/.env` once the approved identifier is confirmed; no code change needed.

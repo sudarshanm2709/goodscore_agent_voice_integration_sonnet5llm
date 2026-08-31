@@ -39,6 +39,10 @@ class FakeTurnController:
             "turn_id": turn.turn_id,
             "audio_len": len(audio_bytes),
         })
+        # Mirrors what the real TurnController populates on the Turn
+        # object, so tests can verify app.py forwards it as captions.
+        turn.transcript = "what is my credit score"
+        turn.answer_text_parts.append("Your score is 742.")
         if self.block_until_cancelled:
             # Simulate a turn that's still "in flight" when barge-in
             # arrives, so app.py's current_task.cancel() actually has
@@ -139,6 +143,69 @@ def test_turn_end_with_audio_invokes_turn_controller(client, fake_state):
     assert fake_state.turn_controller.calls == [
         {"call_id": fake_state.turn_controller.calls[0]["call_id"], "turn_id": "turn-1", "audio_len": len(b"some-audio-bytes")}
     ]
+
+
+def test_turn_end_eventually_receives_turn_done(client, fake_state):
+    """Regression test for a protocol gap found while building a test
+    client: without an explicit completion signal, a client can't tell
+    when a turn's audio is fully sent except by guessing from silence.
+    """
+    with client.websocket_connect("/v1/voice/stream") as ws:
+        ws.send_text('{"type": "hello", "user_id": "user-1", "auth_token": "tok"}')
+        ws.receive_json()  # ready
+        ws.send_bytes(b"some-audio-bytes")
+        ws.send_text('{"type": "turn_end", "turn_id": "turn-1"}')
+
+        started = ws.receive_json()
+        assert started == {"type": "turn_started", "turn_id": "turn-1"}
+        done = ws.receive_json()
+        assert done["type"] == "turn_done"
+        assert done["turn_id"] == "turn-1"
+
+
+def test_turn_done_carries_transcript_and_answer_text_captions(client, fake_state):
+    """turn_done should forward what STT heard and what the chatbot said
+    — captions for the UI, populated once the turn completes (see
+    FakeTurnController, which mirrors what the real TurnController sets
+    on the Turn object).
+    """
+    with client.websocket_connect("/v1/voice/stream") as ws:
+        ws.send_text('{"type": "hello", "user_id": "user-1", "auth_token": "tok"}')
+        ws.receive_json()  # ready
+        ws.send_bytes(b"some-audio-bytes")
+        ws.send_text('{"type": "turn_end", "turn_id": "turn-1"}')
+
+        ws.receive_json()  # turn_started
+        done = ws.receive_json()
+
+        assert done == {
+            "type": "turn_done",
+            "turn_id": "turn-1",
+            "transcript": "what is my credit score",
+            "answer_text": "Your score is 742.",
+        }
+
+
+def test_cancelled_turn_never_carries_captions(client):
+    """A barge-in's turn_cancelled must never leak partial transcript or
+    answer text — that content was discarded, not spoken to the user.
+    """
+    state = FakeVoiceServiceState(block_until_cancelled=True)
+    app.state.voice = state
+
+    with client.websocket_connect("/v1/voice/stream") as ws:
+        ws.send_text('{"type": "hello", "user_id": "user-1", "auth_token": "tok"}')
+        ws.receive_json()  # ready
+        ws.send_bytes(b"some-audio-bytes")
+        ws.send_text('{"type": "turn_end", "turn_id": "turn-1"}')
+        ws.receive_json()  # turn_started
+
+        ws.send_text('{"type": "barge_in", "turn_id": "turn-2"}')
+        cancelled = ws.receive_json()
+
+        assert cancelled == {"type": "turn_cancelled", "turn_id": "turn-1"}
+        assert "transcript" not in cancelled
+        assert "answer_text" not in cancelled
 
 
 def test_barge_in_echoes_the_interrupted_turn_id_not_the_new_one(client):

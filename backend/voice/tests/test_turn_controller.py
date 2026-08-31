@@ -37,6 +37,54 @@ def _controller(stt=None, tts=None, chatbot=None, filler_config=None):
     )
 
 
+async def test_stt_language_hint_omitted_for_non_iso_session_language(call_session, turn, filler_config):
+    """Regression test for a real bug caught in live testing: GoodScore's
+    own "hi-en" (Hinglish) pseudo-code isn't a valid ISO-639-1 code, and
+    passing it straight through to OpenRouter's STT as the language hint
+    silently produced an empty transcript for real audio that transcribed
+    fine with no hint at all. Only genuine 2-letter codes should reach STT.
+    """
+    call_session.language = "hi-en"
+    stt = FakeSTTAdapter()
+    controller = _controller(stt=stt, filler_config=filler_config)
+    streamer = RecordingStreamer()
+
+    await controller.run_turn(call_session, turn, b"raw-audio", "webm", streamer)
+
+    assert stt.language_hints_received == [None]
+
+
+async def test_stt_language_hint_forwarded_for_genuine_iso_codes(call_session, turn, filler_config):
+    call_session.language = "hi"
+    stt = FakeSTTAdapter()
+    controller = _controller(stt=stt, filler_config=filler_config)
+    streamer = RecordingStreamer()
+
+    await controller.run_turn(call_session, turn, b"raw-audio", "webm", streamer)
+
+    assert stt.language_hints_received == ["hi"]
+
+
+async def test_done_event_token_usage_is_captured_and_exported(call_session, turn, filler_config, tmp_path, monkeypatch):
+    logged = []
+    monkeypatch.setattr(
+        "voice.turn_controller.write_token_usage_log",
+        lambda log_dir, session, t: logged.append((log_dir, session.call_id, t.token_usage)),
+    )
+
+    chatbot = FakeChatbotClient(events=[
+        {"type": "text_delta", "text": "Your score is 742."},
+        {"type": "done", "text": "", "token_usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}},
+    ])
+    controller = TurnController(FakeSTTAdapter(), FakeTTSAdapter(), chatbot, filler_config, str(tmp_path))
+    streamer = RecordingStreamer()
+
+    await controller.run_turn(call_session, turn, b"raw-audio", "webm", streamer)
+
+    assert turn.token_usage == {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+    assert logged == [(str(tmp_path), call_session.call_id, turn.token_usage)]
+
+
 async def test_happy_path_transcribes_answers_and_speaks(call_session, turn, filler_config):
     stt = FakeSTTAdapter(text="what is my credit score")
     tts = FakeTTSAdapter()
@@ -71,6 +119,9 @@ async def test_stt_failure_speaks_error_message_and_skips_chatbot(call_session, 
     assert chatbot.requests == []  # never reached the chatbot
     assert len(streamer.chunks) > 0  # spoke the terminal error message
     assert any("clearly" in t.lower() for t in tts.synthesized_texts)
+    # Regression: a spoken terminal message must be captioned too — the
+    # UI's turn_done caption is read from turn.answer_text_parts.
+    assert "clearly" in "".join(turn.answer_text_parts).lower()
 
 
 async def test_chatbot_failure_speaks_error_message(call_session, turn, filler_config):
@@ -82,6 +133,29 @@ async def test_chatbot_failure_speaks_error_message(call_session, turn, filler_c
     await controller.run_turn(call_session, turn, b"raw-audio", "webm", streamer)
 
     assert any("trouble" in t.lower() for t in tts.synthesized_texts)
+
+
+async def test_chatbot_in_band_error_event_speaks_error_message(call_session, turn, filler_config):
+    """Regression test for a real bug caught in live testing: an
+    in-band {"type": "error"} SSE event (the request itself succeeds,
+    but the chatbot's own stream reports a failure — e.g. agent
+    construction failed on the chat side) used to only get logged,
+    never spoken — the call would go silent after "Thinking…" with no
+    explanation. Must behave the same as a request-level failure.
+    """
+    chatbot = FakeChatbotClient(events=[
+        {"type": "error", "message": "Agent unavailable: RuntimeError: ANTHROPIC_API_KEY missing"},
+        {"type": "done", "text": ""},
+    ])
+    tts = FakeTTSAdapter()
+    controller = _controller(FakeSTTAdapter(), tts, chatbot, filler_config)
+    streamer = RecordingStreamer()
+
+    await controller.run_turn(call_session, turn, b"raw-audio", "webm", streamer)
+
+    assert any("trouble" in t.lower() for t in tts.synthesized_texts)
+    assert len(streamer.chunks) > 0
+    assert "trouble" in "".join(turn.answer_text_parts).lower()
 
 
 async def test_tts_failure_does_not_crash_the_turn(call_session, turn, filler_config):

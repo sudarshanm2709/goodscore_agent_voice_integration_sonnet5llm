@@ -5,3 +5,4 @@ __pycache__/
 .venv_test/
 venv/
 .env
+token_usage_logs/

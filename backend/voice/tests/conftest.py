@@ -28,9 +28,11 @@ class FakeSTTAdapter(SpeechToTextAdapter):
         self.language = language
         self.fail = fail
         self.calls: list[bytes] = []
+        self.language_hints_received: list[str | None] = []
 
     async def transcribe(self, audio_bytes: bytes, audio_format: str, language_hint):
         self.calls.append(audio_bytes)
+        self.language_hints_received.append(language_hint)
         if self.fail:
             raise TranscriptionError("simulated STT failure")
         return TranscriptionResult(text=self.text, detected_language=self.language)

@@ -24,7 +24,16 @@ WebSocket protocol (see README.md for the full contract):
   server -> client, JSON text frames, informational:
     {"type": "turn_started", "turn_id": "..."}
     {"type": "turn_cancelled", "turn_id": "..."}
+    {"type": "turn_done", "turn_id": "...", "transcript": "...", "answer_text": "..."}
     {"type": "error", "message": "..."}
+
+  turn_done's transcript/answer_text are optional captions for the UI —
+  what STT heard and the chatbot's full reply, sent together once the
+  turn finishes (not streamed word-by-word). Either can be null (e.g.
+  transcript is always present once STT succeeds; answer_text is null
+  if the turn ended before any text streamed back, such as an STT
+  failure). A cancelled turn (turn_cancelled) never carries captions —
+  its content was discarded, not spoken.
 """
 from __future__ import annotations
 
@@ -34,6 +43,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from starlette.websockets import WebSocketState
 
 from .adapters.openrouter_stt import OpenRouterSTTAdapter
 from .adapters.openrouter_tts import OpenRouterTTSAdapter
@@ -59,7 +69,9 @@ class VoiceServiceState:
         self.chatbot = ChatbotClient(config.chatbot)
         self.goodscore = GoodScoreClient(config.goodscore)
         self.prefetch_controller = CreditPrefetchController(self.goodscore)
-        self.turn_controller = TurnController(self.stt, self.tts, self.chatbot, config.fillers)
+        self.turn_controller = TurnController(
+            self.stt, self.tts, self.chatbot, config.fillers, config.token_usage_log_dir
+        )
         self._sweeper_task: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -185,6 +197,13 @@ async def voice_stream(websocket: WebSocket) -> None:
                 current_task = asyncio.ensure_future(
                     state.turn_controller.run_turn(session, turn, audio_bytes, input_format, current_streamer)
                 )
+                # Let the client know when this turn's audio is fully
+                # sent, so it can stop waiting for more chunks instead of
+                # guessing from a silence timeout. Runs alongside the main
+                # receive loop; a barge-in cancels current_task directly
+                # (see below), so this simply returns without sending
+                # anything for a cancelled turn.
+                asyncio.ensure_future(_notify_turn_done(websocket, current_task, turn))
 
             elif control_type == "barge_in":
                 # `control["turn_id"]` (per the protocol in this module's
@@ -219,6 +238,38 @@ async def voice_stream(websocket: WebSocket) -> None:
             current_task.cancel()
         if session is not None:
             await state.session_store.end(session.call_id)
+
+
+async def _notify_turn_done(websocket: WebSocket, task: asyncio.Task, turn: Turn) -> None:
+    """Send `turn_done` once `task` (TurnController.run_turn) finishes
+    normally, including optional captions for the UI (see <captions>
+    below). Silently does nothing if the turn was cancelled (barge-in
+    already told the client via turn_cancelled) or the socket closed.
+
+    Captions: `transcript` (what STT heard) and `answer_text` (the
+    chatbot's full reply) are read off the Turn object after the turn
+    completes — turn_controller.py already populates both for its own
+    logging/TTS use, this just forwards them. They arrive together, once,
+    at turn end — not word-by-word as the turn streams — since that
+    needs no changes to turn_controller.py's pipeline and the mobile UI
+    only needs them for a caption, not a live transcript.
+    """
+    try:
+        await task
+    except asyncio.CancelledError:
+        return
+    except Exception:  # noqa: BLE001 - run_turn already logs its own errors
+        return
+    if websocket.client_state == WebSocketState.CONNECTED:
+        try:
+            await websocket.send_json(server_event(
+                "turn_done",
+                turn_id=turn.turn_id,
+                transcript=turn.transcript,
+                answer_text="".join(turn.answer_text_parts) or None,
+            ))
+        except Exception:  # noqa: BLE001 - socket may have closed concurrently
+            pass
 
 
 async def _validate_call_auth(user_id: str, auth_token: str) -> bool:

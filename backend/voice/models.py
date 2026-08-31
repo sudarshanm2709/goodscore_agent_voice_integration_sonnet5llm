@@ -56,6 +56,11 @@ class Turn:
     # metric exactly once per turn regardless of how many sentences/fillers
     # are spoken. See turn_controller.py's _speak().
     first_audio_logged: bool = False
+    # Token usage for this turn's LLM call, read off the chatbot's `done`
+    # SSE event (see backend/chat/agent.py — additive, voice-channel-only
+    # field). None if the turn never reached the chatbot (e.g. STT failed)
+    # or the chatbot didn't report usage (e.g. agent construction failed).
+    token_usage: dict | None = None
 
     def mark_cancelled(self) -> None:
         self.cancelled = True

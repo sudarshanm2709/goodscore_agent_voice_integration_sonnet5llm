@@ -26,6 +26,7 @@ from .clients.chatbot import ChatbotClient, ChatbotClientError, ChatbotTurnReque
 from .fillers import FillerController, FillerOperation
 from .models import CallSession, Turn, TurnState
 from .observability import StageTimer, log_error, log_event, log_metric
+from .token_usage_logger import write_token_usage_log
 
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?।\n])\s+")
 
@@ -67,11 +68,13 @@ class TurnController:
         tts: TextToSpeechAdapter,
         chatbot: ChatbotClient,
         filler_config,
+        token_usage_log_dir: str = "token_usage_logs",
     ) -> None:
         self._stt = stt
         self._tts = tts
         self._chatbot = chatbot
         self._filler_config = filler_config
+        self._token_usage_log_dir = token_usage_log_dir
 
     async def run_turn(
         self,
@@ -85,7 +88,14 @@ class TurnController:
         any point — cleanup happens in the `finally` blocks below.
         """
         t_turn_start = time.monotonic()
-        language_hint = None if session.language == "auto" else session.language
+        # OpenRouter's STT expects a genuine ISO-639-1 code — GoodScore's
+        # own "hi-en" (Hinglish) pseudo-code isn't one, and passing it
+        # through as-is silently degrades transcription to empty text
+        # (confirmed live: a real audio clip transcribed fine with no
+        # hint, but came back empty when "hi-en" was sent as the
+        # language). Only forward genuine 2-letter codes; anything else
+        # (including "hi-en" and "auto") lets STT auto-detect instead.
+        language_hint = session.language if session.language in ("en", "hi") else None
 
         # Step 1: transcribe the buffered utterance.
         turn.state = TurnState.TRANSCRIBING
@@ -205,13 +215,36 @@ class TurnController:
                             break
                         await self._speak(session, turn, streamer, sentence, t_turn_start)
 
+                elif etype == "done":
+                    # Additive field, only present when channel="voice"
+                    # (see backend/chat/agent.py) — chat's own done event
+                    # never carries this, so it's simply absent there.
+                    if event.get("token_usage"):
+                        turn.token_usage = event["token_usage"]
+
                 elif etype == "error":
+                    # The chatbot can fail two different ways: the HTTP
+                    # request itself errors (raises ChatbotClientError,
+                    # handled below), or the request succeeds but the
+                    # chatbot's own SSE stream carries an in-band
+                    # {"type": "error"} event (e.g. agent construction
+                    # failed — see backend/chat/agent.py's run_turn_async).
+                    # This branch used to only log the second case and
+                    # never actually tell the caller anything went wrong
+                    # — the call would just go silent after "Thinking…"
+                    # with no explanation. Speak the same friendly
+                    # fallback the request-failure path already uses.
                     log_error(
                         "turn_chatbot_error",
                         ChatbotClientError(str(event.get("message"))),
                         call_id=session.call_id,
                         turn_id=turn.turn_id,
                     )
+                    if not self._is_stale(session, turn):
+                        await self._speak_terminal_message(
+                            session, turn, streamer, _error_message("chatbot", effective_language), t_turn_start
+                        )
+                    return
 
         except ChatbotClientError as exc:
             log_error("turn_chatbot_failed", exc, call_id=session.call_id, turn_id=turn.turn_id)
@@ -248,6 +281,9 @@ class TurnController:
             call_id=session.call_id,
             turn_id=turn.turn_id,
         )
+        # Export this turn's LLM token usage as a text file — after the
+        # response is already fully sent, so this never delays audio.
+        write_token_usage_log(self._token_usage_log_dir, session, turn)
 
     async def _speak(
         self,
@@ -316,6 +352,11 @@ class TurnController:
         t_turn_start: float,
     ) -> None:
         turn.state = TurnState.DONE
+        # Unlike a filler (a stopgap, not the answer), a terminal message
+        # IS the whole response for this turn — record it the same way a
+        # real streamed answer would be, so app.py's turn_done caption
+        # matches what was actually spoken instead of staying blank.
+        turn.answer_text_parts.append(message)
         await self._speak(session, turn, streamer, message, t_turn_start)
 
     @staticmethod

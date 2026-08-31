@@ -175,7 +175,10 @@ _DEEPLINKS: dict[str, str] = {
 class TurnContext:
     """Mutable per-turn state injected into the cached Agent before each call."""
 
-    __slots__ = ("chips", "deeplinks", "queue", "final_text_parts", "emitted_tool_ids", "tool_id_to_name", "chips_emitted")
+    __slots__ = (
+        "chips", "deeplinks", "queue", "final_text_parts", "emitted_tool_ids",
+        "tool_id_to_name", "chips_emitted", "token_usage",
+    )
 
     def __init__(self) -> None:
         self.chips: list[str] = []
@@ -185,6 +188,11 @@ class TurnContext:
         self.emitted_tool_ids: set[str] = set()
         self.tool_id_to_name: dict[str, str] = {}
         self.chips_emitted: bool = False
+        # Additive — token usage for this turn's LLM call(s), captured off
+        # agent.event_loop_metrics when the callback reports completion
+        # (see _install_turn_wiring). None until then. Only ever read by
+        # run_turn_async when channel="voice" — see <token usage logging>.
+        self.token_usage: dict | None = None
 
     def reset(self, queue: asyncio.Queue) -> None:
         self.chips = []
@@ -194,6 +202,7 @@ class TurnContext:
         self.emitted_tool_ids = set()
         self.tool_id_to_name = {}
         self.chips_emitted = False
+        self.token_usage = None
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +344,30 @@ def _make_knowledge_tools() -> list:
     return [search_knowledge_base]
 
 
-def _make_session_manager(session_id: str, user_id: str) -> AgentCoreMemorySessionManager:
+def _make_session_manager(session_id: str, user_id: str) -> AgentCoreMemorySessionManager | None:
+    """Return the AgentCore Memory session manager — or None in local mode.
+
+    AgentCoreMemorySessionManager.__init__ makes a real AWS call
+    (list_events, to load prior turns) before the Agent can even be
+    constructed, independent of which model provider is used — so
+    MODEL_PROVIDER=anthropic alone doesn't make chat usable without AWS.
+    When MODEL_PROVIDER=anthropic, this returns None instead: Strands'
+    Agent already accepts session_manager=None (in-process conversation
+    history only, no cross-session persistence), which is exactly what
+    local testing without AWS needs. Every existing caller (Bedrock,
+    the only prior behaviour) is unaffected — this only changes what
+    happens for the new, opt-in local provider.
+    """
+    if cfg.MODEL_PROVIDER == "anthropic":
+        logger.info(
+            "[agent] MODEL_PROVIDER=anthropic — skipping AgentCoreMemorySessionManager "
+            "(no AWS in local mode); using in-process conversation history only."
+        )
+        return None
+    return _make_agentcore_session_manager(session_id, user_id)
+
+
+def _make_agentcore_session_manager(session_id: str, user_id: str) -> AgentCoreMemorySessionManager:
     config = AgentCoreMemoryConfig(
         memory_id=cfg.AGENTCORE_MEMORY_ID,
         session_id=session_id,
@@ -496,6 +528,22 @@ def _install_turn_wiring(
             return
 
         if kwargs.get("complete"):
+            # Additive — capture token usage for this turn's LLM call(s)
+            # directly off the live Agent object. agent.event_loop_metrics
+            # is updated incrementally as the event loop runs (see Strands'
+            # EventLoopMetrics.update_usage), so it already reflects the
+            # full turn by the time "complete" fires here — no need to
+            # wait for agent(message) to fully return (which would also
+            # wait on AgentCore Memory's write, delaying the response).
+            try:
+                usage = agent.event_loop_metrics.accumulated_usage
+                ctx.token_usage = {
+                    "input_tokens": usage.get("inputTokens"),
+                    "output_tokens": usage.get("outputTokens"),
+                    "total_tokens": usage.get("totalTokens"),
+                }
+            except Exception:  # noqa: BLE001 - usage capture must never break the turn
+                ctx.token_usage = None
             ctx.queue.put_nowait(RESPONSE_DONE)
             return
 
@@ -539,7 +587,19 @@ async def run_turn_async(
         yield {"type": "done", "text": ""}
         return
 
-    agent, ctx, agent_lock = _get_or_create_agent(user_id, session_id, channel=channel)
+    try:
+        agent, ctx, agent_lock = _get_or_create_agent(user_id, session_id, channel=channel)
+    except Exception as e:  # noqa: BLE001
+        # Agent construction (model client, AgentCore Memory session load)
+        # previously had no error handling at all here — any failure
+        # (e.g. missing ANTHROPIC_API_KEY, an expired/invalid AWS
+        # session) crashed the SSE stream outright instead of surfacing
+        # a normal error event like every other failure path in this
+        # function does.
+        logger.error("[agent] construction failed | user=%s session=%s | %s: %s", user_id, session_id, type(e).__name__, e)
+        yield {"type": "error", "message": f"Agent unavailable: {type(e).__name__}: {e}"}
+        yield {"type": "done", "text": ""}
+        return
 
     queue: asyncio.Queue[dict | object] = asyncio.Queue()
     _install_turn_wiring(agent, ctx, queue)
@@ -616,7 +676,13 @@ async def run_turn_async(
                 "pres_tool_ids": pres_tool_ids,
             }
 
-    yield {"type": "done", "text": ""}
+    done_event: dict = {"type": "done", "text": ""}
+    # Additive, voice-only: attach this turn's token usage to the done
+    # event. Chat's existing done payload ({"type": "done", "text": ""})
+    # is unchanged for every caller that doesn't pass channel="voice".
+    if channel == "voice" and ctx.token_usage is not None:
+        done_event["token_usage"] = ctx.token_usage
+    yield done_event
     logger.info(
         "[turn] DONE  | user=%s session=%s | elapsed=%.3fs",
         user_id, session_id, time.perf_counter() - t_turn_start,

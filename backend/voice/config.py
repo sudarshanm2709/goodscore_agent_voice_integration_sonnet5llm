@@ -132,6 +132,7 @@ class VoiceServiceConfig:
     goodscore: GoodScoreApiConfig
     audio: AudioConfig
     fillers: FillerConfig
+    token_usage_log_dir: str
 
 
 def load_config() -> VoiceServiceConfig:
@@ -215,4 +216,5 @@ def load_config() -> VoiceServiceConfig:
         goodscore=goodscore,
         audio=audio,
         fillers=fillers,
+        token_usage_log_dir=_get("TOKEN_USAGE_LOG_DIR", "token_usage_logs") or "token_usage_logs",
     )
