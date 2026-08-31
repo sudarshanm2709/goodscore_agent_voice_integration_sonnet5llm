@@ -1,0 +1,5 @@
+# Test-only dependencies for backend/tests/ (voice-channel regression tests).
+# New file — requirements.txt (used by the Docker/AgentCore build) is untouched.
+-r requirements.txt
+pytest>=8.0
+pytest-asyncio>=0.24
