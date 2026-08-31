@@ -51,6 +51,11 @@ class Turn:
     detected_language: str | None = None
     answer_text_parts: list[str] = field(default_factory=list)
     cancelled: bool = False
+    # Set once the first audio chunk of this turn's spoken response (filler
+    # or real answer) has been sent — used to log the time_to_first_audio
+    # metric exactly once per turn regardless of how many sentences/fillers
+    # are spoken. See turn_controller.py's _speak().
+    first_audio_logged: bool = False
 
     def mark_cancelled(self) -> None:
         self.cancelled = True

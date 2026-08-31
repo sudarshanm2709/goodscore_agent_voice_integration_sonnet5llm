@@ -6,7 +6,7 @@ existing chatbot's `/invocations` endpoint, and converts the returned
 answer to speech — streamed back to the mobile app over a WebSocket.
 
 **It is not a second AI brain.** The existing Strands agent running
-through AgentCore Runtime (in `backend/`) remains the only model call in
+through AgentCore Runtime (in `backend/chat/`) remains the only model call in
 the system. This service never calls Bedrock, AgentCore Memory, Aurora,
 S3, or S3 Vectors directly — see `clients/chatbot.py`.
 
@@ -21,15 +21,15 @@ what's confirmed vs. what genuinely needs to come from the team:
 |---|---|
 | `OPENROUTER_API_KEY` | **Required.** Get one at openrouter.ai. |
 | `OPENROUTER_STT_MODEL` / `OPENROUTER_TTS_MODEL` | Pre-filled with the confirmed live OpenRouter slugs for Nemotron 3.5 ASR and Kokoro 82M (verified against OpenRouter's docs during this integration). Update if OpenRouter renames/retires either model. |
-| `CHATBOT_MODE` / `CHATBOT_LOCAL_BASE_URL` | Defaults to `local`, pointing at a locally running `backend/server.py`. |
-| `AGENTCORE_INVOKE_URL` | **TBD.** Required only for `CHATBOT_MODE=agentcore` (production). This is the same AgentCore Runtime invoke URL already used in `backend/lambda_sts_function.py` — get the current value from that deployment. |
-| `BEDROCK_MODEL_ID` (in `backend/.env`, not here) | **TBD.** The chatbot's own config still defaults to `global.anthropic.claude-sonnet-4-6`. The approved Sonnet 5 Bedrock model identifier was not supplied to this integration — update `backend/.env` once you have it. This service never talks to Bedrock directly, so it has no separate model-id setting. |
+| `CHATBOT_MODE` / `CHATBOT_LOCAL_BASE_URL` | Defaults to `local`, pointing at a locally running `backend/chat/server.py`. |
+| `AGENTCORE_INVOKE_URL` | **TBD.** Required only for `CHATBOT_MODE=agentcore` (production). This is the same AgentCore Runtime invoke URL already used in `backend/chat/lambda_sts_function.py` — get the current value from that deployment. |
+| `BEDROCK_MODEL_ID` (in `backend/chat/.env`, not here) | **TBD.** The chatbot's own config still defaults to `global.anthropic.claude-sonnet-4-6`. The approved Sonnet 5 Bedrock model identifier was not supplied to this integration — update `backend/chat/.env` once you have it. This service never talks to Bedrock directly, so it has no separate model-id setting. |
 | `VOICE_LANGUAGE_SELECTION_MODE` | **TBD** — final product decision between explicit mobile-app language selection and automatic STT language detection. Both are implemented; `.env.example` defaults to `auto_stt`. |
 
 ## 2. Starting the existing chatbot (unchanged)
 
 ```bash
-cd backend
+cd backend/chat
 pip install -r requirements.txt
 python -m server
 ```
@@ -41,10 +41,16 @@ as it runs today — nothing in this step changed. The voice service's
 ## 3. Starting the voice service
 
 ```bash
-cd voice-service
+cd backend/voice
 pip install -r requirements.txt
 cp .env.example .env   # then fill in OPENROUTER_API_KEY at minimum
-uvicorn voice_service.app:app --reload --port 8090
+# --app-dir .. because `voice` is a package rooted at backend/ (the
+# parent of this directory) — app.py's own imports are package-relative
+# (`from .config import ...`), so it must be loaded as `voice.app`, not
+# as a bare top-level `app` module. --env-file loads .env directly (this
+# service's config.py reads plain os.environ, unlike backend/chat/config.py
+# which loads its own .env via python-dotenv).
+uvicorn voice.app:app --app-dir .. --env-file .env --reload --port 8090
 ```
 
 `GET http://localhost:8090/health` should return `{"ok": true, ...}`.
@@ -104,7 +110,7 @@ Connect a WebSocket client to `ws://localhost:8090/v1/voice/stream`, then:
 ## 6. Running tests
 
 ```bash
-cd voice-service
+cd backend/voice
 pip install -r requirements-dev.txt
 pytest
 ```
@@ -113,15 +119,15 @@ Tests use fake STT/TTS/chatbot adapters (`tests/conftest.py`) and
 `httpx.MockTransport` for the real OpenRouter/chatbot HTTP clients — no
 network access or real API keys are needed to run the suite.
 
-Chat regression tests for the additive `backend/` changes live in
-`backend/tests/` — see the root-level note in that directory.
+Chat regression tests for the additive `backend/chat/` changes live in
+`backend/chat/tests/` — run with `cd backend/chat && pip install -r requirements-dev.txt && pytest`.
 
 ## 7. Known TBD / deployment items
 
 - **`AGENTCORE_INVOKE_URL`** — production AgentCore Runtime invoke URL for `CHATBOT_MODE=agentcore`.
-- **Approved Sonnet 5 Bedrock model identifier** — `backend/config.py`'s `BEDROCK_MODEL_ID` default is `global.anthropic.claude-sonnet-4-6`, not Sonnet 5. Update `backend/.env` once the approved identifier is confirmed; no code change needed.
+- **Approved Sonnet 5 Bedrock model identifier** — `backend/chat/config.py`'s `BEDROCK_MODEL_ID` default is `global.anthropic.claude-sonnet-4-6`, not Sonnet 5. Update `backend/chat/.env` once the approved identifier is confirmed; no code change needed.
 - **Mobile client auth token validation** — `_validate_call_auth()` in `app.py` currently performs the same minimal check the existing chat surface makes (non-empty user id/token). Wire in GoodScore's real session/token validation endpoint once one is designated for the mobile voice client.
-- **AgentCore Gateway / knowledge base** — the diagrams show `Strands Agent → knowledge-retrieval tool → AgentCore Gateway → S3 Vectors`, but no Gateway URL, OAuth config, S3 bucket, or S3 Vectors index was supplied. `backend/knowledge_gateway.py` implements the adapter boundary and is registered as a disabled-by-default fifth Strands tool (`AGENTCORE_GATEWAY_URL` unset ⇒ inactive, chat and voice behaviour unchanged). Real config is required to activate it.
+- **AgentCore Gateway / knowledge base** — the diagrams show `Strands Agent → knowledge-retrieval tool → AgentCore Gateway → S3 Vectors`, but no Gateway URL, OAuth config, S3 bucket, or S3 Vectors index was supplied. `backend/chat/knowledge_gateway.py` implements the adapter boundary and is registered as a disabled-by-default fifth Strands tool (`AGENTCORE_GATEWAY_URL` unset ⇒ inactive, chat and voice behaviour unchanged; `KNOWLEDGE_BASE_MODE=local_dummy` backs it with `backend/chat/dummy_knowledge_base.py` for local testing). Real Gateway config is required to activate the production path.
 - **Language selection mode** — explicit mobile selection vs. automatic STT detection; both implemented, final choice TBD (see `VOICE_LANGUAGE_SELECTION_MODE`).
 - **Server-side voice activity detection** — Phase 1 uses client-signalled `turn_end`; a server-side VAD/turn-detector could replace or supplement this without changing the WebSocket protocol.
 - **ECS/ALB/WAF/ACM deployment (Terraform/CDK, task definitions, target groups)** — out of scope per `<working_rules>` ("do not deploy or modify shared AWS infrastructure"); this repo only contains the application code and Dockerfile.
@@ -137,4 +143,4 @@ Chat regression tests for the additive `backend/` changes live in
   `get_credit_report` tool calls, and drives deterministic filler
   selection while that tool call is in flight. It does not change the
   chatbot's tool-only-answers behaviour — the four existing customer-data
-  tools in `backend/tools.py` are untouched.
+  tools in `backend/chat/tools.py` are untouched.

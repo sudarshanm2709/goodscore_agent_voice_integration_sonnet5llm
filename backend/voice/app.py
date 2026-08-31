@@ -187,6 +187,12 @@ async def voice_stream(websocket: WebSocket) -> None:
                 )
 
             elif control_type == "barge_in":
+                # `control["turn_id"]` (per the protocol in this module's
+                # docstring) is the NEW turn the user is starting, not the
+                # one being interrupted — capture the interrupted turn's id
+                # before mutating anything, so turn_cancelled echoes the
+                # right one back to the client.
+                interrupted_turn_id = session.current_turn.turn_id if session.current_turn else None
                 if session.current_turn is not None:
                     session.current_turn.mark_cancelled()
                 if current_streamer is not None:
@@ -195,9 +201,14 @@ async def voice_stream(websocket: WebSocket) -> None:
                     current_task.cancel()
                 inbound.drain()  # discard any audio queued for the interrupted turn
                 await websocket.send_json(
-                    server_event("turn_cancelled", turn_id=control.get("turn_id"))
+                    server_event("turn_cancelled", turn_id=interrupted_turn_id)
                 )
-                log_event("turn_barge_in", call_id=session.call_id)
+                log_event(
+                    "turn_barge_in",
+                    call_id=session.call_id,
+                    interrupted_turn_id=interrupted_turn_id,
+                    new_turn_id=control.get("turn_id"),
+                )
 
     except WebSocketDisconnect:
         pass
@@ -229,4 +240,4 @@ if __name__ == "__main__":
     import uvicorn
 
     cfg = load_config()
-    uvicorn.run("voice_service.app:app", host=cfg.host, port=cfg.port, reload=False)
+    uvicorn.run("voice.app:app", host=cfg.host, port=cfg.port, reload=False)

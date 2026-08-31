@@ -3,8 +3,8 @@ import time
 
 import pytest
 
-from voice_service.models import CallSession, CallState, new_call_id
-from voice_service.sessions import InMemorySessionStore
+from voice.models import CallSession, CallState, new_call_id
+from voice.sessions import InMemorySessionStore
 
 
 def _make_session(call_id: str | None = None) -> CallSession:

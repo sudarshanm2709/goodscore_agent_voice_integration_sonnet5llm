@@ -3,8 +3,8 @@ import asyncio
 import pytest
 
 from conftest import FakeChatbotClient, FakeSTTAdapter, FakeTTSAdapter
-from voice_service.models import TurnState
-from voice_service.turn_controller import TurnController
+from voice.models import TurnState
+from voice.turn_controller import TurnController
 
 
 class RecordingStreamer:
@@ -101,7 +101,7 @@ async def test_stale_turn_is_abandoned_without_speaking(call_session, turn, fill
     before the chatbot has replied — the superseded turn's output must
     never reach the streamer.
     """
-    from voice_service.models import Turn, new_turn_id
+    from voice.models import Turn, new_turn_id
 
     chatbot = FakeChatbotClient(
         events=[{"type": "text_delta", "text": "stale answer"}, {"type": "done"}],

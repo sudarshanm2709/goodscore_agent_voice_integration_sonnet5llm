@@ -6,12 +6,20 @@ import random
 import threading
 import time
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import TYPE_CHECKING, AsyncGenerator
 
 from botocore.exceptions import ClientError
 from strands import Agent, tool
 from strands.hooks import AfterToolCallEvent
 from strands.models import BedrockModel
+
+if TYPE_CHECKING:
+    # Only needed for the type hints below — see the deferred runtime
+    # import in _get_anthropic_model(). Safe to reference unimported here
+    # because `from __future__ import annotations` (top of file) makes
+    # every annotation a lazily-evaluated string, never executed at
+    # runtime for a plain function signature.
+    from strands.models.anthropic import AnthropicModel
 
 from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig, RetrievalConfig
 from bedrock_agentcore.memory.integrations.strands.session_manager import (
@@ -60,6 +68,60 @@ def _get_bedrock_model() -> BedrockModel:
             max_tokens=cfg.MODEL_MAX_TOKENS,
         )
     return _BEDROCK_MODEL
+
+
+# ---------------------------------------------------------------------------
+# Local-development model provider (additive — see config.MODEL_PROVIDER).
+#
+# _ANTHROPIC_MODEL is a separate singleton from _BEDROCK_MODEL so switching
+# MODEL_PROVIDER never touches the Bedrock path at all. The import of
+# strands.models.anthropic is deliberately deferred to inside this function
+# (not at module top) — that package needs the `anthropic` extra
+# (`pip install 'strands-agents[anthropic]'`, see requirements-local.txt),
+# which is NOT in the base requirements.txt. Importing it eagerly at module
+# load would break `import agent` — and therefore the whole chatbot,
+# including production Bedrock users — on any machine that only installed
+# requirements.txt. Deferring it means the import is only ever attempted if
+# MODEL_PROVIDER=anthropic is actually selected.
+# ---------------------------------------------------------------------------
+_ANTHROPIC_MODEL: AnthropicModel | None = None
+
+
+def _get_anthropic_model() -> AnthropicModel:
+    global _ANTHROPIC_MODEL
+    if _ANTHROPIC_MODEL is None:
+        if not cfg.ANTHROPIC_API_KEY:
+            raise RuntimeError(
+                "MODEL_PROVIDER=anthropic requires ANTHROPIC_API_KEY to be set."
+            )
+        try:
+            from strands.models.anthropic import AnthropicModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "MODEL_PROVIDER=anthropic requires the 'anthropic' extra: "
+                "pip install 'strands-agents[anthropic]' "
+                "(see backend/requirements-local.txt)."
+            ) from exc
+        _ANTHROPIC_MODEL = AnthropicModel(
+            client_args={"api_key": cfg.ANTHROPIC_API_KEY},
+            model_id=cfg.ANTHROPIC_MODEL_ID,
+            max_tokens=cfg.MODEL_MAX_TOKENS,
+        )
+    return _ANTHROPIC_MODEL
+
+
+def _get_active_model() -> BedrockModel | AnthropicModel:
+    """Return the model for the configured provider.
+
+    Defaults to Bedrock (cfg.MODEL_PROVIDER unset ⇒ "bedrock") — every
+    existing chat/voice call site that doesn't set MODEL_PROVIDER gets
+    the exact prior behaviour. "anthropic" is a local-testing-only
+    alternative (see the block above); it is never selected unless a
+    local .env explicitly opts in.
+    """
+    if cfg.MODEL_PROVIDER == "anthropic":
+        return _get_anthropic_model()
+    return _get_bedrock_model()
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +318,7 @@ def _make_knowledge_tools() -> list:
     tools plus the two presentation tools — unchanged from before this
     integration.
     """
-    if not knowledge_gateway.is_configured():
+    if not knowledge_gateway.is_active():
         return []
 
     @tool
@@ -315,7 +377,7 @@ def _build_agent(user_id: str, session_id: str, ctx: TurnContext, channel: str =
     session_manager = _make_session_manager(session_id, user_id)
 
     agent = Agent(
-        model=_get_bedrock_model(),
+        model=_get_active_model(),
         system_prompt=build_system_prompt(user_id, channel=channel),
         tools=user_tools + presentation_tools + knowledge_tools,
         callback_handler=None,   # installed dynamically each turn (see _install_turn_wiring)

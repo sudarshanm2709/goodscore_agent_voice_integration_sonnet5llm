@@ -1,6 +1,6 @@
 import pytest
 
-from voice_service.config import ConfigurationError, load_config
+from voice.config import ConfigurationError, load_config
 
 _REQUIRED_OPENROUTER_ENV = {
     "OPENROUTER_API_KEY": "sk-test",
@@ -24,6 +24,15 @@ def test_load_config_defaults_to_local_chatbot_mode(monkeypatch):
     config = load_config()
     assert config.chatbot.mode == "local"
     assert config.chatbot.local_base_url == "http://localhost:8000"
+
+
+def test_load_config_defaults_tts_voice_to_kokoro_default(monkeypatch):
+    """Kokoro on OpenRouter rejects requests with no voice at all
+    (confirmed against the live API) — this must never resolve to None.
+    """
+    _set_env(monkeypatch, OPENROUTER_TTS_VOICE=None)
+    config = load_config()
+    assert config.openrouter.tts_voice == "af_heart"
 
 
 def test_load_config_missing_openrouter_key_raises(monkeypatch):

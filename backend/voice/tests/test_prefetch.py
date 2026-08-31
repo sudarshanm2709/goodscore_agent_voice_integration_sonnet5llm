@@ -1,7 +1,7 @@
 import pytest
 
-from voice_service.clients.goodscore import GoodScoreApiError
-from voice_service.prefetch import CreditPrefetchController
+from voice.clients.goodscore import GoodScoreApiError
+from voice.prefetch import CreditPrefetchController
 
 
 class _OkClient:

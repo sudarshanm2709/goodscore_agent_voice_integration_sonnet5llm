@@ -1,0 +1,5 @@
+# Extra dependency for local development without AWS (MODEL_PROVIDER=anthropic
+# in backend/.env — see config.py and agent.py's _get_anthropic_model()).
+# New file — requirements.txt (used by the Docker/AgentCore build) is untouched.
+-r requirements.txt
+strands-agents[anthropic]>=0.1.0

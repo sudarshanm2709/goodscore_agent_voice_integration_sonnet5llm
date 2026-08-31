@@ -1,10 +1,12 @@
 import sys
 from pathlib import Path
 
-# Make the `voice_service` package importable when pytest is run from the
-# voice-service/ directory (`pytest` or `pytest tests/`) without requiring
-# the project to be pip-installed.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Make the `voice` package importable when pytest is run from backend/voice/
+# (`pytest` or `pytest tests/`) without requiring the project to be
+# pip-installed. The package root is backend/, one level above this
+# directory's parent (backend/voice/) — i.e. three `.parent`s up from this
+# file: tests/ -> voice/ -> backend/.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import asyncio
 from dataclasses import dataclass, field
@@ -12,10 +14,10 @@ from typing import AsyncIterator
 
 import pytest
 
-from voice_service.adapters.stt import SpeechToTextAdapter, TranscriptionError, TranscriptionResult
-from voice_service.adapters.tts import SynthesisError, TextToSpeechAdapter
-from voice_service.config import FillerConfig
-from voice_service.models import CallSession, CallState, Turn, new_call_id, new_turn_id
+from voice.adapters.stt import SpeechToTextAdapter, TranscriptionError, TranscriptionResult
+from voice.adapters.tts import SynthesisError, TextToSpeechAdapter
+from voice.config import FillerConfig
+from voice.models import CallSession, CallState, Turn, new_call_id, new_turn_id
 
 
 class FakeSTTAdapter(SpeechToTextAdapter):
@@ -82,7 +84,7 @@ class FakeChatbotClient:
         return self._generate()
 
     async def _generate(self):
-        from voice_service.clients.chatbot import ChatbotClientError
+        from voice.clients.chatbot import ChatbotClientError
 
         if self.fail:
             raise ChatbotClientError("simulated chatbot failure")

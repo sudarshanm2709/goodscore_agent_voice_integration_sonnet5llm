@@ -1,6 +1,6 @@
 import time
 
-from voice_service.fillers import FillerController, FillerOperation
+from voice.fillers import FillerController, FillerOperation
 
 
 def test_filler_not_ready_before_min_wait(filler_config):

@@ -4,8 +4,8 @@ import os
 import httpx
 import pytest
 
-from voice_service.config import ChatbotConfig
-from voice_service.clients.chatbot import ChatbotClient, ChatbotClientError, ChatbotTurnRequest
+from voice.config import ChatbotConfig
+from voice.clients.chatbot import ChatbotClient, ChatbotClientError, ChatbotTurnRequest
 
 
 def _sse_body(events: list[dict]) -> bytes:

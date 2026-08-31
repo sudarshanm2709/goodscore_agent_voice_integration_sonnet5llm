@@ -4,11 +4,11 @@ import json
 import httpx
 import pytest
 
-from voice_service.adapters.openrouter_stt import OpenRouterSTTAdapter
-from voice_service.adapters.openrouter_tts import OpenRouterTTSAdapter
-from voice_service.adapters.stt import TranscriptionError
-from voice_service.adapters.tts import SynthesisError
-from voice_service.config import OpenRouterConfig
+from voice.adapters.openrouter_stt import OpenRouterSTTAdapter
+from voice.adapters.openrouter_tts import OpenRouterTTSAdapter
+from voice.adapters.stt import TranscriptionError
+from voice.adapters.tts import SynthesisError
+from voice.config import OpenRouterConfig
 
 
 def _config(**overrides) -> OpenRouterConfig:

@@ -158,7 +158,12 @@ def load_config() -> VoiceServiceConfig:
         api_key=_require("OPENROUTER_API_KEY"),
         stt_model=_require("OPENROUTER_STT_MODEL"),
         tts_model=_require("OPENROUTER_TTS_MODEL"),
-        tts_voice=_get("OPENROUTER_TTS_VOICE"),
+        # Kokoro 82M on OpenRouter rejects requests with no voice at all
+        # ("An explicit voice is required for this TTS provider" — confirmed
+        # against the live API) unlike some other OpenRouter TTS providers,
+        # so this always resolves to a real voice ID rather than None.
+        # af_heart is Kokoro's documented default American-English voice.
+        tts_voice=_get("OPENROUTER_TTS_VOICE", "af_heart"),
         tts_response_format=_get("OPENROUTER_TTS_RESPONSE_FORMAT", "pcm"),
         request_timeout_seconds=_get_float("OPENROUTER_TIMEOUT_SECONDS", 20.0),
         max_retries=_get_int("OPENROUTER_MAX_RETRIES", 2),

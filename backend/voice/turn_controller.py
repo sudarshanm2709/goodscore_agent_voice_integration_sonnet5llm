@@ -95,7 +95,7 @@ class TurnController:
         except TranscriptionError as exc:
             log_error("turn_stt_failed", exc, call_id=session.call_id, turn_id=turn.turn_id)
             await self._speak_terminal_message(
-                session, turn, streamer, _error_message("stt", session.language)
+                session, turn, streamer, _error_message("stt", session.language), t_turn_start
             )
             return
 
@@ -166,7 +166,7 @@ class TurnController:
                     done, _ = await asyncio.wait({pending_next}, timeout=max(remaining, 0.0))
                     if not done:
                         if not self._is_stale(session, turn) and filler.ready_to_speak():
-                            await self._speak_filler(session, turn, streamer, filler)
+                            await self._speak_filler(session, turn, streamer, filler, t_turn_start)
                         continue  # keep waiting on the same pending_next task
 
                 try:
@@ -203,7 +203,7 @@ class TurnController:
                     for sentence in ready:
                         if self._is_stale(session, turn):
                             break
-                        await self._speak(session, turn, streamer, sentence, t_turn_start, first_audio_logged=[False])
+                        await self._speak(session, turn, streamer, sentence, t_turn_start)
 
                 elif etype == "error":
                     log_error(
@@ -217,7 +217,7 @@ class TurnController:
             log_error("turn_chatbot_failed", exc, call_id=session.call_id, turn_id=turn.turn_id)
             if not self._is_stale(session, turn):
                 await self._speak_terminal_message(
-                    session, turn, streamer, _error_message("chatbot", effective_language)
+                    session, turn, streamer, _error_message("chatbot", effective_language), t_turn_start
                 )
             return
         finally:
@@ -239,7 +239,7 @@ class TurnController:
 
         # Flush any trailing partial sentence that never hit a boundary.
         if spoken_buffer.strip():
-            await self._speak(session, turn, streamer, spoken_buffer.strip(), t_turn_start, first_audio_logged=[False])
+            await self._speak(session, turn, streamer, spoken_buffer.strip(), t_turn_start)
 
         turn.state = TurnState.DONE
         log_metric(
@@ -256,8 +256,18 @@ class TurnController:
         streamer: OutboundAudioStreamer,
         text: str,
         t_turn_start: float,
-        first_audio_logged: list,
     ) -> None:
+        """Synthesize and stream one piece of text (a filler, an error
+        message, or one sentence of the real answer).
+
+        time_to_first_audio is measured relative to the true turn start
+        (t_turn_start, from run_turn) and logged exactly once per turn —
+        via turn.first_audio_logged — the first time ANY audio reaches
+        the client, whether that's a filler or the real answer's first
+        sentence. That's deliberate: a filler is what the user actually
+        hears first, so it's the honest "time until the bot made a
+        sound" measurement, not an implementation detail to hide.
+        """
         turn.state = TurnState.SPEAKING
         try:
             audio_stream = self._tts.synthesize(text, turn.detected_language or session.language)
@@ -265,8 +275,8 @@ class TurnController:
                 if self._is_stale(session, turn) or streamer.stopped:
                     await audio_stream.aclose()
                     return
-                if not first_audio_logged[0]:
-                    first_audio_logged[0] = True
+                if not turn.first_audio_logged:
+                    turn.first_audio_logged = True
                     log_metric(
                         "time_to_first_audio",
                         (time.monotonic() - t_turn_start) * 1000,
@@ -281,7 +291,12 @@ class TurnController:
             log_error("turn_tts_failed", exc, call_id=session.call_id, turn_id=turn.turn_id)
 
     async def _speak_filler(
-        self, session: CallSession, turn: Turn, streamer: OutboundAudioStreamer, filler: FillerController
+        self,
+        session: CallSession,
+        turn: Turn,
+        streamer: OutboundAudioStreamer,
+        filler: FillerController,
+        t_turn_start: float,
     ) -> None:
         if turn.turn_id in session.fillers_spoken_for_turn:
             return
@@ -290,13 +305,18 @@ class TurnController:
             return
         session.fillers_spoken_for_turn.add(turn.turn_id)
         log_event("filler_spoken", call_id=session.call_id, turn_id=turn.turn_id, operation=filler.operation.value)
-        await self._speak(session, turn, streamer, message, time.monotonic(), first_audio_logged=[True])
+        await self._speak(session, turn, streamer, message, t_turn_start)
 
     async def _speak_terminal_message(
-        self, session: CallSession, turn: Turn, streamer: OutboundAudioStreamer, message: str
+        self,
+        session: CallSession,
+        turn: Turn,
+        streamer: OutboundAudioStreamer,
+        message: str,
+        t_turn_start: float,
     ) -> None:
         turn.state = TurnState.DONE
-        await self._speak(session, turn, streamer, message, time.monotonic(), first_audio_logged=[True])
+        await self._speak(session, turn, streamer, message, t_turn_start)
 
     @staticmethod
     def _is_stale(session: CallSession, turn: Turn) -> bool:

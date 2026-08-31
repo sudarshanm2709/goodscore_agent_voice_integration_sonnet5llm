@@ -315,7 +315,7 @@ async def invocations(payload: dict):
         or ""
     )
 
-    # --- Voice channel (additive, optional — see voice-service/) ---------
+    # --- Voice channel (additive, optional — see backend/voice/) ---------
     # `payload` is an untyped dict, so these are pure additive reads: any
     # existing caller that doesn't send them (every chat request today)
     # gets channel="chat", which is byte-for-byte the prior behaviour —
