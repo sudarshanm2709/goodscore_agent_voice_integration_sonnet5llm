@@ -494,6 +494,27 @@ def _install_turn_wiring(
     RESPONSE_DONE = _RESPONSE_DONE_SENTINEL  # module-level object, see below
 
     def _callback(**kwargs: object) -> None:
+        if "result" in kwargs:
+            # Additive — capture token usage for this turn's LLM call(s).
+            # kwargs["result"] is the AgentResult Strands passes to the
+            # callback as its very last invocation for the turn — verified
+            # live (not assumed): the "complete" kwarg some Strands
+            # versions/providers use for early-completion signalling
+            # (see below) never actually fires for this Strands+Anthropic
+            # combination, so usage capture hooks off "result" instead,
+            # independently of that mechanism.
+            try:
+                result = kwargs["result"]
+                usage = result.metrics.accumulated_usage
+                ctx.token_usage = {
+                    "input_tokens": usage.get("inputTokens"),
+                    "output_tokens": usage.get("outputTokens"),
+                    "total_tokens": usage.get("totalTokens"),
+                }
+            except Exception as e:  # noqa: BLE001 - usage capture must never break the turn
+                ctx.token_usage = None
+                logger.warning("[agent] token usage capture failed | %s: %s", type(e).__name__, e)
+
         if "data" in kwargs:
             text = str(kwargs["data"])
             # Filter out empty strings and placeholder artifacts that Strands
@@ -528,22 +549,6 @@ def _install_turn_wiring(
             return
 
         if kwargs.get("complete"):
-            # Additive — capture token usage for this turn's LLM call(s)
-            # directly off the live Agent object. agent.event_loop_metrics
-            # is updated incrementally as the event loop runs (see Strands'
-            # EventLoopMetrics.update_usage), so it already reflects the
-            # full turn by the time "complete" fires here — no need to
-            # wait for agent(message) to fully return (which would also
-            # wait on AgentCore Memory's write, delaying the response).
-            try:
-                usage = agent.event_loop_metrics.accumulated_usage
-                ctx.token_usage = {
-                    "input_tokens": usage.get("inputTokens"),
-                    "output_tokens": usage.get("outputTokens"),
-                    "total_tokens": usage.get("totalTokens"),
-                }
-            except Exception:  # noqa: BLE001 - usage capture must never break the turn
-                ctx.token_usage = None
             ctx.queue.put_nowait(RESPONSE_DONE)
             return
 

@@ -49,9 +49,16 @@ def test_voice_channel_adds_section_five_without_removing_chat_sections():
 
 
 def test_voice_channel_relaxes_chip_mandate_and_forbids_markdown():
+    """Written with positive instructions per Anthropic's own current
+    guidance for Claude Sonnet 5 (positive framing outperforms "don't"
+    instructions for this model) — so this checks intent (chips aren't
+    required, markdown is avoided) via the actual positive wording used,
+    not a literal "Do NOT ..." string.
+    """
     prompt = build_system_prompt("user-1", channel="voice")
-    assert "Do NOT call send_chip_response" in prompt
-    assert "Do NOT use markdown" in prompt
+    assert "send_chip_response and get_deeplinks" in prompt
+    assert "nothing to attach to on a call" in prompt
+    assert "table, or markdown" in prompt
 
 
 def test_voice_channel_still_contains_chat_ground_rules_verbatim():

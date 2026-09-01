@@ -1,35 +1,45 @@
 """Regression tests for the additive token_usage field on the done event.
 
 Uses a minimal fake Agent (not a real Strands Agent — that needs a real
-model call) that drives the same callback_handler wiring a real Agent
-would, exposing token usage via .event_loop_metrics.accumulated_usage
-exactly like the real strands.telemetry.metrics.EventLoopMetrics does
-(verified against the installed package before writing this).
+model call) that drives agent.callback_handler the way the REAL, installed
+Strands + Anthropic-provider combination actually does — verified live
+against a real API call, not assumed: the final callback invocation for a
+turn carries kwargs["result"] (an AgentResult with .metrics.accumulated_usage),
+never kwargs["complete"] (that kwarg is checked elsewhere in agent.py for
+the pre-existing RESPONSE_DONE signal, but was observed to never actually
+fire for this combination — a pre-existing characteristic, not something
+these tests changed).
 """
 import threading
 
 import agent as agent_module
 
 
-class _FakeEventLoopMetrics:
+class _FakeMetrics:
     def __init__(self, usage: dict):
         self.accumulated_usage = usage
 
 
+class _FakeAgentResult:
+    def __init__(self, usage: dict):
+        self.metrics = _FakeMetrics(usage)
+
+
 class _FakeAgent:
-    """Drives agent.callback_handler the way a real Strands Agent does
-    for one simple turn: one text delta, then complete.
+    """Drives agent.callback_handler the way the real Strands+Anthropic
+    combination does for one simple turn: one text delta, then the final
+    result callback.
     """
 
     def __init__(self, usage: dict):
-        self.event_loop_metrics = _FakeEventLoopMetrics(usage)
         self.callback_handler = None
         self.messages: list = []
         self.hooks = _FakeHooks()
+        self._usage = usage
 
     def __call__(self, message: str):
         self.callback_handler(data="Hello there.")
-        self.callback_handler(complete=True)
+        self.callback_handler(result=_FakeAgentResult(self._usage))
 
 
 class _FakeHooks:
@@ -69,16 +79,19 @@ async def test_chat_channel_done_event_never_includes_token_usage(monkeypatch):
 
 
 async def test_usage_capture_failure_does_not_break_the_turn(monkeypatch):
-    """If reading event_loop_metrics ever raises for some reason, the
-    turn must still complete normally — usage is a nice-to-have, not a
-    load-bearing part of the response.
+    """If reading result.metrics.accumulated_usage ever raises for some
+    reason, the turn must still complete normally — usage is a
+    nice-to-have, not a load-bearing part of the response.
     """
+    class _BrokenResult:
+        @property
+        def metrics(self):
+            raise RuntimeError("metrics unavailable")
+
     class _BrokenAgent(_FakeAgent):
         def __call__(self, message: str):
             self.callback_handler(data="Hello there.")
-            # Simulate accumulated_usage being unreadable.
-            self.event_loop_metrics = None
-            self.callback_handler(complete=True)
+            self.callback_handler(result=_BrokenResult())
 
     fake_agent = _BrokenAgent({"inputTokens": 1, "outputTokens": 1, "totalTokens": 2})
     ctx = agent_module.TurnContext()

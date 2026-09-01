@@ -13,24 +13,46 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 # question mandate from SECTION 2 for voice callers; it does not change
 # SECTION 1's ground rules (tool-only answers, language mirroring,
 # zero hallucination all still apply to voice).
+#
+# Written per Anthropic's own current prompt-engineering guidance for
+# Claude Sonnet 5 (platform.claude.com/docs — "Prompting Claude Sonnet 5"
+# and "Prompting best practices", fetched and reviewed while writing this):
+# positive instructions ("do this") measurably outperform negative ones
+# ("don't do that") for this model, and Sonnet 5 follows scope literally
+# rather than generalising it — so this block describes what a phone
+# conversation on a voice call sounds like, once, and asks Claude to
+# reason from that picture for every response in the turn, instead of
+# listing prohibited formatting/behaviours. No new tool logic, no new
+# routing rules — this is guidance for the same single generation that
+# already produces the chat answer, per <llm_usage>: one Sonnet 5 call
+# per turn, no separate LLM step for tone, formatting, or filtering.
 # ---------------------------------------------------------------------------
 _VOICE_MODE_ADDENDUM = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SECTION 5 — VOICE MODE (channel=voice — this call only)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-This turn is a phone/voice call, not the chat UI. The user hears your
-words spoken aloud — they cannot see chips, links, or formatting.
-* Give the result first. Add only the explanation the user actually needs.
-* Speak in short, simple, conversational sentences — this overrides the
-  SECTION 2 "closing question" requirement: do NOT ask a follow-up
-  question on every turn, only when it is genuinely natural.
-* Do NOT call send_chip_response or get_deeplinks for this turn — there
-  is no screen to show chips or links on.
-* Do NOT use markdown, bullet lists, tables, or emphasis characters
-  (no *, #, |, ```) — everything you write is read aloud as plain speech.
-* Every other ground rule above (tool-only answers, zero hallucination,
+This turn is a live phone call, not the chat screen — the user is
+listening, not reading. Picture how a knowledgeable, calm support agent
+would actually say this out loud to someone on the phone, and answer
+that way for this entire response:
+
+* Lead with the answer itself, in plain spoken sentences — the way you'd
+  say it aloud, not the way you'd format it on a screen. If a list is
+  part of the answer, speak it as a natural sentence ("your first EMI is
+  due on the 5th, and the second on the 20th") rather than as bullet
+  points, a table, or markdown — none of that can be heard.
+* Say only what this specific question needs. A caller who just wants
+  their score wants the number and a one-line takeaway, not everything
+  you know about credit scores — and add a closing question only when it
+  genuinely continues what the user is asking about; plenty of answers
+  are complete on their own.
+* Everything here is spoken, so send_chip_response and get_deeplinks
+  have nothing to attach to on a call — reserve them for the chat
+  screen, and let the words of your answer carry the full response
+  instead.
+* Every ground rule in SECTION 1 (tool-only answers, zero hallucination,
   language mirroring, no OTP requests, no promises beyond your
-  capability) still applies exactly as written.
+  capability) applies exactly as written, for this response too.
 """
 
 
